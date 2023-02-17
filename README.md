@@ -1,5 +1,5 @@
-# The new home for the Pixel Streaming servers!
-The Pixel Streaming servers and web frontend that was in `Samples/PixelStreaming/WebServers` is now here. 
+# Startup script on AWS Linux instance 
+`cd ~/pixel-streaming-infrastructure/SignallingWebServer/platform_scripts/bash && chmod +x Start_WithTURN_SignallingServer.sh && chmod +x setup.sh && chmod +x ./Start_SignallingServer.sh && dos2unix ./Start_SignallingServer.sh && dos2unix ./setup.sh && dos2unix ./Start_WithTURN_SignallingServer.sh && dos2unix ./common_utils.sh && ./Start_SignallingServer.sh`
 
 ## Goals
 
