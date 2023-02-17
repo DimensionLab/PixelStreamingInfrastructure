@@ -28,6 +28,19 @@ class TwoWayMap {
     }
 }
 
+// Event listener for messages from the Front end application
+window.onmessage = function (messageFromReact) {
+    // Parse the json payload
+    var jsonPayload = JSON.parse(messageFromReact.data);
+    // If it is a message we want to send on to the Unreal Application
+    if (jsonPayload.type == "message") {
+      // Log the contents of the payload
+      console.log("Message from front-end recieved on Signalling Server: " + messageFromReact.data);
+      // Send the payload  to the Unreal Application
+      emitUIInteraction(jsonPayload);
+    }
+}
+
 /**
  * Frontend logic
  */
@@ -697,7 +710,7 @@ function onFullscreenChange() {
 
 function parseURLParams() {
     let urlParams = new URLSearchParams(window.location.search);
-    inputOptions.controlScheme = (urlParams.has('hoveringMouse') ?  ControlSchemeType.HoveringMouse : ControlSchemeType.LockedMouse);
+    inputOptions.controlScheme = (urlParams.has('lockedMouse') ?  ControlSchemeType.LockedMouse : ControlSchemeType.HoveringMouse);
     let schemeToggle = document.getElementById("control-scheme-text");
     switch (inputOptions.controlScheme) {
         case ControlSchemeType.HoveringMouse:
@@ -2743,6 +2756,14 @@ function closeStream() {
     }
 }
 
+function handleUnrealMessage(message) {
+    // Log the message recieved
+    console.log("Message recieved on signalling server from unreal: " + message);
+    // Post the data back to the React app
+    window.top.postMessage(message, "*");
+}
+
+
 function load() {
     parseURLParams();
     setupHtmlEvents();
@@ -2752,5 +2773,6 @@ function load() {
     registerKeyboardEvents();
     // Example response event listener that logs to console
     addResponseEventListener('logListener', (response) => {console.log(`Received response message from streamer: "${response}"`)})
+    addResponseEventListener("handle_responses", handleUnrealMessage);
     start(false);
 }
