@@ -55,7 +55,7 @@ let rAF = window.mozRequestAnimationFrame ||
 let webRtcPlayerObj = null;
 let print_stats = false;
 let print_inputs = false;
-let connect_on_load = false;
+let connect_on_load = true;
 let ws;
 const WS_OPEN_STATE = 1;
 
@@ -72,7 +72,7 @@ let resizeTimeout;
 let responseEventListeners = new Map();
 
 let freezeFrameOverlay = null;
-let shouldShowPlayOverlay = true;
+let shouldShowPlayOverlay = false;
 
 let isFullscreen = false;
 let isMuted = false;
