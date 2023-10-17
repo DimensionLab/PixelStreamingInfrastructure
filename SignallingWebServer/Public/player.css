@@ -513,6 +513,7 @@ input[type=number]:disabled::-webkit-inner-spin-button {
 #settingsBtn,
 #statsBtn {
 	cursor: pointer;
+	display: none;
 }
 
 #streamingVideo {
