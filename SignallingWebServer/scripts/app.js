@@ -2616,7 +2616,13 @@ function connect() {
             console.warn(msg.warning);
         } else if (msg.type === 'peerDataChannels') {
             onWebRtcSFUPeerDatachannels(msg);
-        } else {
+        } else if (msg.type === "ping") {
+            ws.send(JSON.stringify({
+                type: 'pong',
+            }));
+            console.log("Received ping from server, connection is still active, sending pong");
+        }
+        else {
             console.error("Invalid SS message type", msg.type);
         }
     };
