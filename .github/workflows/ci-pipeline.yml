@@ -16,10 +16,15 @@ jobs:
       - name: Set up Docker Buildx (optional, but recommended for multi-platform builds)
         uses: docker/setup-buildx-action@v1
 
+      # Generate a unique tag using the current date and time
+      - name: Generate tag
+        run: |
+          TAG=$(date +"%Y%m%d%H%M%S")
+
       - name: Build the Docker image
         run: |
-          docker build -t simlai-pixel-streaming:testing .
-          docker tag simlai-pixel-streaming:testing ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/simlai-pixel-streaming:testing
+          docker build -t simlai-pixel-streaming:$TAG .
+          docker tag simlai-pixel-streaming:$TAG ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/simlai-pixel-streaming:$TAG
         env:
           AWS_REGION: ${{ secrets.AWS_REGION }}
           AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
