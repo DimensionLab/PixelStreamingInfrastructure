@@ -16,14 +16,9 @@ jobs:
       - name: Set up Docker Buildx (optional, but recommended for multi-platform builds)
         uses: docker/setup-buildx-action@v1
 
-      - name: Generate tag
-        run: |
-          TAG=$(date +"%Y%m%d%H%M%S")
-          echo $TAG
-          export TAG=$TAG
-
       - name: Build the Docker image
         run: |
+          TAG=$(date +"%Y%m%d%H%M%S")
           echo $TAG
           docker build -t simlai-pixel-streaming:dev .
           docker tag simlai-pixel-streaming:dev ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/simlai-pixel-streaming:dev
