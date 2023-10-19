@@ -24,6 +24,7 @@ jobs:
 
       - name: Build the Docker image
         run: |
+          echo $TAG
           docker build -t simlai-pixel-streaming:dev .
           docker tag simlai-pixel-streaming:dev ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/simlai-pixel-streaming:dev
           docker tag simlai-pixel-streaming:dev ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/simlai-pixel-streaming:$TAG
