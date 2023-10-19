@@ -20,8 +20,6 @@ jobs:
       - name: Generate tag
         run: |
           TAG=$(date +"%Y%m%d%H%M%S")
-          GIT_SHA=$(git rev-parse --short HEAD)
-          TAG="${TAG}-${GIT_SHA}"
           echo $TAG
           export TAG=$TAG
 
