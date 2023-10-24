@@ -3,7 +3,7 @@ name: CI Build pipeline Pixel Streaming
 on:
   push:
     branches:
-      - UE5.1
+      - dev
 
 jobs:
   build_and_push:
