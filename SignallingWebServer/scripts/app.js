@@ -2561,6 +2561,15 @@ function start(isReconnection) {
     }
 }
 
+function startHealthCheck() {
+    setInterval(function() {
+      console.log("Pinging server to check connection");
+      ws.send(JSON.stringify({
+        type: 'ping',
+    }));
+    }, 45000);
+  }
+
 function connect() {
     "use strict";
 
@@ -2576,6 +2585,7 @@ function connect() {
     console.log(`Creating a websocket connection to: ${connectionUrl}`);
     ws = new WebSocket(connectionUrl);
     ws.attemptStreamReconnection = true;
+    startHealthCheck();
 
     ws.onmessagebinary = function(event) {
         if(!event || !event.data) { return; }
