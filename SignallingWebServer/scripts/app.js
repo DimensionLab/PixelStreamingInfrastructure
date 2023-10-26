@@ -2567,7 +2567,7 @@ function startHealthCheck() {
       ws.send(JSON.stringify({
         type: 'ping',
     }));
-    }, 45000);
+    }, 10000);
   }
 
 function connect() {
