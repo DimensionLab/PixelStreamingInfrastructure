@@ -1,8 +1,9 @@
-name: Publish the Signalling Server container image for Unreal Engine 5.1
+name: Publish Cirrus container
 
 on:
   push:
-    branches: ['UE5.1']
+    branches: ['UE5.3']
+    paths: ['SignallingWebServer/**']
 
 jobs:
   signalling-server-image:
@@ -22,9 +23,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       -
-        name: Build and push the Signalling Server container image for Unreal Engine 5.1
+        name: Build and push the Signalling Server container image
         uses: docker/build-push-action@v3
         with:
-          context: ./SignallingWebServer
-          tags: 'ghcr.io/epicgames/pixel-streaming-signalling-server:5.1'
+          context: .
+          tags: 'ghcr.io/epicgames/pixel-streaming-signalling-server:5.3'
           push: true
+          file: SignallingWebServer/Dockerfile

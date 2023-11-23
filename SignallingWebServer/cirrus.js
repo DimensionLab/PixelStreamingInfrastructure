@@ -18,6 +18,8 @@ const defaultConfig = {
 	UseFrontend: false,
 	UseMatchmaker: false,
 	UseHTTPS: false,
+	HTTPSCertFile: './certificates/client-cert.pem',
+	HTTPSKeyFile: './certificates/client-key.pem',
 	UseAuthentication: false,
 	LogToFile: true,
 	LogVerbose: true,
@@ -25,13 +27,14 @@ const defaultConfig = {
 	AdditionalRoutes: new Map(),
 	EnableWebserver: true,
 	MatchmakerAddress: "",
-	MatchmakerPort: "9999",
+	MatchmakerPort: 9999,
 	PublicIp: "localhost",
 	HttpPort: 80,
 	HttpsPort: 443,
 	StreamerPort: 8888,
 	SFUPort: 8889,
-	MaxPlayerCount: -1
+	MaxPlayerCount: -1,
+	DisableSSLCert: true
 };
 
 const argv = require('yargs').argv;
@@ -40,7 +43,7 @@ console.log(`configFile ${configFile}`);
 const config = require('./modules/config.js').init(configFile, defaultConfig);
 
 if (config.LogToFile) {
-	logging.RegisterFileLogger('./logs');
+	logging.RegisterFileLogger('./logs/');
 }
 
 console.log("Config: " + JSON.stringify(config, null, '\t'));
@@ -50,8 +53,8 @@ var http = require('http').Server(app);
 if (config.UseHTTPS) {
 	//HTTPS certificate details
 	const options = {
-		key: fs.readFileSync(path.join(__dirname, './certificates/client-key.pem')),
-		cert: fs.readFileSync(path.join(__dirname, './certificates/client-cert.pem'))
+		key: fs.readFileSync(path.join(__dirname, config.HTTPSKeyFile)),
+		cert: fs.readFileSync(path.join(__dirname, config.HTTPSCertFile))
 	};
 
 	var https = require('https').Server(options, app);
@@ -78,8 +81,11 @@ if (config.UseFrontend) {
 	var httpPort = 3000;
 	var httpsPort = 8000;
 
-	//Required for self signed certs otherwise just get an error back when sending request to frontend see https://stackoverflow.com/a/35633993
-	process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0"
+	if (config.UseHTTPS && config.DisableSSLCert) {
+		//Required for self signed certs otherwise just get an error back when sending request to frontend see https://stackoverflow.com/a/35633993
+		console.logColor(logging.Orange, 'WARNING: config.DisableSSLCert is true. Unauthorized SSL certificates will be allowed! This is convenient for local testing but please DO NOT SHIP THIS IN PRODUCTION. To remove this warning please set DisableSSLCert to false in your config.json.');
+		process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0"
+	}
 
 	const httpsClient = require('./modules/httpsClient.js');
 	var webRequest = new httpsClient();
@@ -189,11 +195,21 @@ if (config.UseHTTPS) {
 
 sendGameSessionData();
 
+// set up rate limiter: maximum of five requests per minute
+var RateLimit = require('express-rate-limit');
+var limiter = RateLimit({
+  windowMs: 1*60*1000, // 1 minute
+  max: 60
+});
+
+// apply rate limiter to all requests
+app.use(limiter);
+
 //Setup the login page if we are using authentication
 if(config.UseAuthentication){
 	if(config.EnableWebserver) {
 		app.get('/login', function(req, res){
-			res.sendFile(__dirname + '/login.htm');
+			res.sendFile(path.join(__dirname, '/Public', '/login.html'));
 		});
 	}
 
@@ -268,147 +284,404 @@ if (config.UseHTTPS) {
 	});
 }
 
-console.logColor(logging.Cyan, `Running Cirrus - The Pixel Streaming reference implementation signalling server for Unreal Engine 5.1.`);
+console.logColor(logging.Cyan, `Running Cirrus - The Pixel Streaming reference implementation signalling server for Unreal Engine 5.3.`);
 
-let nextPlayerId = 100; // reserve some player ids
-const SFUPlayerId = "1"; // sfu is a special kind of player
+let nextPlayerId = 1;
 
-let streamer = null;				// WebSocket connected to Streamer
-let sfu = null;					// WebSocket connected to SFU
-let players = new Map(); 	// playerId <-> player, where player is either a web-browser or a native webrtc player
+const StreamerType = { Regular: 0, SFU: 1 };
 
-function sfuIsConnected() {
-	return sfu && sfu.readyState == 1;
-}
+class Streamer {
+	constructor(initialId, ws, type) {
+		this.id = initialId;
+		this.ws = ws;
+		this.type = type;
+		this.idCommitted = false;
+	}
 
-function logIncoming(sourceName, msgType, msg) {
-	if (config.LogVerbose)
-		console.logColor(logging.Blue, "\x1b[37m-> %s\x1b[34m: %s", sourceName, msg);
-	else
-		console.logColor(logging.Blue, "\x1b[37m-> %s\x1b[34m: %s", sourceName, msgType);
-}
+	// registers this streamers id
+	commitId(id) {
+		this.id = id;
+		this.idCommitted = true;
+	}
 
-function logOutgoing(destName, msgType, msg) {
-	if (config.LogVerbose)
-		console.logColor(logging.Green, "\x1b[37m<- %s\x1b[32m: %s", destName, msg);
-	else
-		console.logColor(logging.Green, "\x1b[37m<- %s\x1b[32m: %s", destName, msgType);
-}
+	// returns true if we have a valid id
+	isIdCommitted() {
+		return this.idCommitted;
+	}
 
-// normal peer to peer signalling goes to streamer. SFU streaming signalling goes to the sfu
-function sendMessageToController(msg, skipSFU, skipStreamer = false) {
-	const rawMsg = JSON.stringify(msg);
-	if (sfu && sfu.readyState == 1 && !skipSFU) {
-		logOutgoing("SFU", msg.type, rawMsg);
-		sfu.send(rawMsg);
-	} 
-	if (streamer && streamer.readyState == 1 && !skipStreamer) {
-		logOutgoing("Streamer", msg.type, rawMsg);
-		streamer.send(rawMsg);
-	} 
-	
-	if (!sfu && !streamer) {
-		console.error("sendMessageToController: No streamer or SFU connected!\nMSG: %s", rawMsg);
+	// links this streamer to a subscribed SFU player (player component of an SFU)
+	addSFUPlayer(sfuPlayerId) {
+		if (!!this.SFUPlayerId && this.SFUPlayerId != sfuPlayerId) {
+			console.error(`Streamer ${this.id} already has an SFU ${this.SFUPlayerId}. Trying to add ${sfuPlayerId} as SFU.`);
+			return;
+		}
+		this.SFUPlayerId = sfuPlayerId;
+	}
+
+	// removes the previously subscribed SFU player
+	removeSFUPlayer() {
+		delete this.SFUPlayerId;
+	}
+
+	// gets the player id of the subscribed SFU if any
+	getSFUPlayerId() {
+		return this.SFUPlayerId;
+	}
+
+	// returns true if this streamer is forwarding another streamer
+	isSFU() {
+		return this.type == StreamerType.SFU;
+	}
+
+	// links this streamer to a player, used for SFU connections since they have both components
+	setSFUPlayerComponent(playerComponent) {
+		if (!this.isSFU()) {
+			console.error(`Trying to add an SFU player component ${playerComponent.id} to streamer ${this.id} but it is not an SFU type.`);
+			return;
+		}
+		this.sfuPlayerComponent = playerComponent;
+	}
+
+	// gets the player component for this sfu
+	getSFUPlayerComponent() {
+		if (!this.isSFU()) {
+			console.error(`Trying to get an SFU player component from streamer ${this.id} but it is not an SFU type.`);
+			return null;
+		}
+		return this.sfuPlayerComponent;
 	}
 }
 
-function sendMessageToPlayer(playerId, msg) {
-	let player = players.get(playerId);
-	if (!player) {
-		console.log(`dropped message ${msg.type} as the player ${playerId} is not found`);
-		return;
+const PlayerType = { Regular: 0, SFU: 1 };
+const WhoSendsOffer = { Streamer: 0, Browser: 1 };
+
+class Player {
+	constructor(id, ws, type, whoSendsOffer) {
+		this.id = id;
+		this.ws = ws;
+		this.type = type;
+		this.whoSendsOffer = whoSendsOffer;
 	}
-	const playerName = playerId == SFUPlayerId ? "SFU" : `player ${playerId}`;
-	const rawMsg = JSON.stringify(msg);
-	logOutgoing(playerName, msg.type, rawMsg);
-	player.ws.send(rawMsg);
+
+	isSFU() {
+		return this.type == PlayerType.SFU;
+	}
+
+	subscribe(streamerId) {
+		if (!streamers.has(streamerId)) {
+			console.error(`subscribe: Player ${this.id} tried to subscribe to a non-existent streamer ${streamerId}`);
+			return;
+		}
+		this.streamerId = streamerId;
+		if (this.type == PlayerType.SFU) {
+			let streamer = streamers.get(this.streamerId);
+			streamer.addSFUPlayer(this.id);
+		}
+		const msg = { type: 'playerConnected', playerId: this.id, dataChannel: true, sfu: this.type == PlayerType.SFU, sendOffer: this.whoSendsOffer == WhoSendsOffer.Streamer };
+		logOutgoing(this.streamerId, msg);
+		this.sendFrom(msg);
+	}
+
+	unsubscribe() {
+		if (this.streamerId && streamers.has(this.streamerId)) {
+			if (this.type == PlayerType.SFU) {
+				let streamer = streamers.get(this.streamerId);
+				if (streamer.getSFUPlayerId() != this.id) {
+					console.error(`Trying to unsibscribe SFU player ${this.id} from streamer ${streamer.id} but the current SFUId does not match (${streamer.getSFUPlayerId()}).`)
+				} else {
+					streamer.removeSFUPlayer();
+				}
+			}
+			const msg = { type: 'playerDisconnected', playerId: this.id };
+			logOutgoing(this.streamerId, msg);
+			this.sendFrom(msg);
+		}
+		this.streamerId = null;
+	}
+
+	sendFrom(message) {
+		if (!this.streamerId) {
+			if(streamers.size > 0) {
+				this.streamerId = streamers.entries().next().value[0];
+				console.logColor(logging.Orange, `Player ${this.id} attempted to send an outgoing message without having subscribed first. Defaulting to ${this.streamerId}`);
+			} else {
+				console.logColor(logging.Orange, `Player ${this.id} attempted to send an outgoing message without having subscribed first. No streamer connected so this message isn't going anywhere!`)
+				return;
+			}
+		}
+
+		// normally we want to indicate what player this message came from
+		// but in some instances we might already have set this (streamerDataChannels) due to poor choices
+		if (!message.playerId) {
+			message.playerId = this.id;
+		}
+		const msgString = JSON.stringify(message);
+
+		let streamer = streamers.get(this.streamerId);
+		if (!streamer) {
+			console.error(`sendFrom: Player ${this.id} subscribed to non-existent streamer: ${this.streamerId}`);
+		} else {
+			streamer.ws.send(msgString);
+		}
+	}
+
+	sendTo(message) {
+		const msgString = JSON.stringify(message);
+		this.ws.send(msgString);
+	}
+
+	setSFUStreamerComponent(streamerComponent) {
+		if (!this.isSFU()) {
+			console.error(`Trying to add an SFU streamer component ${streamerComponent.id} to player ${this.id} but it is not an SFU type.`);
+			return;
+		}
+		this.sfuStreamerComponent = streamerComponent;
+	}
+
+	getSFUStreamerComponent() {
+		if (!this.isSFU()) {
+			console.error(`Trying to get an SFU streamer component from player ${this.id} but it is not an SFU type.`);
+			return null;
+		}
+		return this.sfuStreamerComponent;
+	}
+};
+
+let streamers = new Map();		// streamerId <-> streamer
+let players = new Map(); 		// playerId <-> player/peer/viewer
+const LegacyStreamerPrefix = "__LEGACY_STREAMER__"; // old streamers that dont know how to ID will be assigned this id prefix.
+const LegacySFUPrefix = "__LEGACY_SFU__"; 					// same as streamer version but for SFUs
+const streamerIdTimeoutSecs = 5;
+
+// gets the SFU subscribed to this streamer if any.
+function getSFUForStreamer(streamerId) {
+	if (!streamers.has(streamerId)) {
+		return null;
+	}
+	const streamer = streamers.get(streamerId);
+	const sfuPlayerId = streamer.getSFUPlayerId();
+	if (!sfuPlayerId) {
+		return null;
+	}
+	return players.get(sfuPlayerId);
+}
+
+function logIncoming(sourceName, msg) {
+	if (config.LogVerbose)
+		console.logColor(logging.Blue, "\x1b[37m%s ->\x1b[34m %s", sourceName, JSON.stringify(msg));
+	else
+		console.logColor(logging.Blue, "\x1b[37m%s ->\x1b[34m %s", sourceName, msg.type);
+}
+
+function logOutgoing(destName, msg) {
+	if (config.LogVerbose)
+		console.logColor(logging.Green, "\x1b[37m%s <-\x1b[32m %s", destName, JSON.stringify(msg));
+	else
+		console.logColor(logging.Green, "\x1b[37m%s <-\x1b[32m %s", destName, msg.type);
+}
+
+function logForward(srcName, destName, msg) {
+	if (config.LogVerbose)
+		console.logColor(logging.Cyan, "\x1b[37m%s -> %s\x1b[36m %s", srcName, destName, JSON.stringify(msg));
+	else
+		console.logColor(logging.Cyan, "\x1b[37m%s -> %s\x1b[36m %s", srcName, destName, msg.type);
 }
 
 let WebSocket = require('ws');
-const { URL } = require('url');
+
+let sfuMessageHandlers = new Map();
+let playerMessageHandlers = new Map();
+
+function sanitizePlayerId(playerId) {
+	if (playerId && typeof playerId === 'number') {
+		playerId = playerId.toString();
+	}
+	return playerId;
+}
+
+function getPlayerIdFromMessage(msg) {
+	return sanitizePlayerId(msg.playerId);
+}
+
+let uniqueLegacyStreamerPostfix = 0;
+function getUniqueLegacyStreamerId() {
+	const finalId = LegacyStreamerPrefix + uniqueLegacyStreamerPostfix;
+	++uniqueLegacyStreamerPostfix;
+	return finalId;
+}
+
+let uniqueLegacySFUPostfix = 0;
+function getUniqueLegacySFUId() {
+	const finalId = LegacySFUPrefix + uniqueLegacySFUPostfix;
+	++uniqueLegacySFUPostfix;
+	return finalId;
+}
+
+function requestStreamerId(streamer) {
+	// first we ask the streamer to id itself.
+	// if it doesnt reply within a time limit we assume it's an older streamer
+	// and assign it an id.
+
+	// request id
+	const msg = { type: "identify" };
+	logOutgoing(streamer.id, msg);
+	streamer.ws.send(JSON.stringify(msg));
+
+	streamer.idTimer = setTimeout(function() {
+		// streamer did not respond in time. give it a legacy id.
+		const newLegacyId = getUniqueLegacyId();
+		if (newLegacyId.length == 0) {
+			const error = `Ran out of legacy ids.`;
+			console.error(error);
+			streamer.ws.close(1008, error);
+		} else {
+			registerStreamer(newLegacyId, streamer);
+		}
+
+	}, streamerIdTimeoutSecs * 1000);
+}
+
+function sanitizeStreamerId(id) {
+	let maxPostfix = -1;
+	for (let [streamerId, streamer] of streamers) {
+		const idMatchRegex = /^(.*?)(\d*)$/;
+		const [, baseId, postfix] = streamerId.match(idMatchRegex);
+		// if the id is numeric then base id will be empty and we need to compare with the postfix
+		if ((baseId != '' && baseId != id) || (baseId == '' && postfix != id)) {
+			continue;
+		}
+		const numPostfix = Number(postfix);
+		if (numPostfix > maxPostfix) {
+			maxPostfix = numPostfix
+		}
+	}
+	if (maxPostfix >= 0) {
+		return id + (maxPostfix + 1);
+	}
+	return id;
+}
+
+function registerStreamer(id, streamer) {
+	// make sure the id is unique
+	const uniqueId = sanitizeStreamerId(id);
+	streamer.commitId(uniqueId);
+	if (!!streamer.idTimer) {
+		clearTimeout(streamer.idTimer);
+		delete streamer.idTimer;
+	}
+	streamers.set(uniqueId, streamer);
+	console.logColor(logging.Green, `Registered new streamer: ${streamer.id}`);
+}
+
+function onStreamerDisconnected(streamer) {
+	if (!streamer.id || !streamers.has(streamer.id)) {
+		return;
+	}
+
+	sendStreamerDisconnectedToMatchmaker();
+	let sfuPlayer = getSFUForStreamer(streamer.id);
+	if (sfuPlayer) {
+		const msg = { type: "streamerDisconnected" };
+		logOutgoing(sfuPlayer.id, msg);
+		sfuPlayer.sendTo(msg);
+		disconnectAllPlayers(sfuPlayer.id);
+	}
+	disconnectAllPlayers(streamer.id);
+	streamers.delete(streamer.id);
+}
+
+function onStreamerMessageId(streamer, msg) {
+	logIncoming(streamer.id, msg);
+
+	let streamerId = msg.id;
+	registerStreamer(streamerId, streamer);
+}
+
+function onStreamerMessagePing(streamer, msg) {
+	logIncoming(streamer.id, msg);
+
+	const pongMsg = JSON.stringify({ type: "pong", time: msg.time});
+	streamer.ws.send(pongMsg);
+}
+
+function onStreamerMessageDisconnectPlayer(streamer, msg) {
+	logIncoming(streamer.id, msg);
+
+	const playerId = getPlayerIdFromMessage(msg);
+	const player = players.get(playerId);
+	if (player) {
+		player.ws.close(1011 /* internal error */, msg.reason);
+	}
+}
+
+function onStreamerMessageLayerPreference(streamer, msg) {
+	let sfuPlayer = getSFUForStreamer(streamer.id);
+	if (sfuPlayer) {
+		logOutgoing(sfuPlayer.id, msg);
+		sfuPlayer.sendTo(msg);
+	}
+}
+
+function forwardStreamerMessageToPlayer(streamer, msg) {
+	const playerId = getPlayerIdFromMessage(msg);
+	const player = players.get(playerId);
+	if (player) {
+		delete msg.playerId;
+		logForward(streamer.id, playerId, msg);
+		player.sendTo(msg);
+	} else {
+		console.warn("No playerId specified, cannot forward message: %s", msg);
+	}
+}
+
+let streamerMessageHandlers = new Map();
+streamerMessageHandlers.set('endpointId', onStreamerMessageId);
+streamerMessageHandlers.set('ping', onStreamerMessagePing);
+streamerMessageHandlers.set('offer', forwardStreamerMessageToPlayer);
+streamerMessageHandlers.set('answer', forwardStreamerMessageToPlayer);
+streamerMessageHandlers.set('iceCandidate', forwardStreamerMessageToPlayer);
+streamerMessageHandlers.set('disconnectPlayer', onStreamerMessageDisconnectPlayer);
+streamerMessageHandlers.set('layerPreference', onStreamerMessageLayerPreference);
 
 console.logColor(logging.Green, `WebSocket listening for Streamer connections on :${streamerPort}`)
 let streamerServer = new WebSocket.Server({ port: streamerPort, backlog: 1 });
 streamerServer.on('connection', function (ws, req) {
-
-	// Check if we have an already existing connection to a streamer, if so, deny a new streamer connecting.
-	if(streamer != null){
-		/* We send a 1008 because that a "policy violation", which similar enough to what is happening here. */
-		ws.close(1008, 'Cirrus supports only 1 streamer being connected, already one connected, so dropping this new connection.');
-		console.logColor(logging.Yellow, `Dropping new streamer connection, we already have a connected streamer`);
-		return;
-	}
-
 	console.logColor(logging.Green, `Streamer connected: ${req.connection.remoteAddress}`);
 	sendStreamerConnectedToMatchmaker();
 
-	ws.on('message', (msgRaw) => {
+	const temporaryId = req.connection.remoteAddress;
+	let streamer = new Streamer(temporaryId, ws, StreamerType.Regular);
 
+	ws.on('message', (msgRaw) => {
 		var msg;
 		try {
 			msg = JSON.parse(msgRaw);
 		} catch(err) {
-			console.error(`cannot parse Streamer message: ${msgRaw}\nError: ${err}`);
-			streamer.close(1008, 'Cannot parse');
+			console.error(`Cannot parse Streamer message: ${msgRaw}\nError: ${err}`);
+			ws.close(1008, 'Cannot parse');
 			return;
 		}
 
-		logIncoming("Streamer", msg.type, msgRaw);
-	
-		try {
-			// just send pings back to sender
-			if (msg.type == 'ping') {
-				const rawMsg = JSON.stringify({ type: "pong", time: msg.time});
-				logOutgoing("Streamer", msg.type, rawMsg);
-				ws.send(rawMsg);
-				return;
+		let handler = streamerMessageHandlers.get(msg.type);
+		if (!handler || (typeof handler != 'function')) {
+			if (config.LogVerbose) {
+				console.logColor(logging.White, "\x1b[37m-> %s\x1b[34m: %s", streamer.id, msgRaw);
 			}
-
-			// Convert incoming playerId to a string if it is an integer, if needed. (We support receiving it as an int or string).
-			let playerId = msg.playerId;
-			if (playerId && typeof playerId === 'number')
-			{
-				playerId = playerId.toString();
-			}
-			delete msg.playerId; // no need to send it to the player
-
-			if (msg.type == 'offer') {
-				sendMessageToPlayer(playerId, msg);
-			} else if (msg.type == 'answer') {
-				sendMessageToPlayer(playerId, msg);
-			} else if (msg.type == 'iceCandidate') {
-				sendMessageToPlayer(playerId, msg);
-			} else if (msg.type == 'disconnectPlayer') {
-				let player = players.get(playerId);
-				if (player) {
-					player.ws.close(1011 /* internal error */, msg.reason);
-				}
-			} else {
-				console.error(`unsupported Streamer message type: ${msg.type}`);
-			}
-		} catch(err) {
-			console.error(`ERROR: ws.on message error: ${err.message}`);
+			console.error(`unsupported Streamer message type: ${msg.type}`);
+			ws.close(1008, 'Unsupported message type');
+			return;
 		}
+		handler(streamer, msg);
 	});
-
-	function onStreamerDisconnected() {
-		sendStreamerDisconnectedToMatchmaker();
-		disconnectAllPlayers();
-		if (sfuIsConnected()) {
-			const msg = { type: "streamerDisconnected" };
-			sfu.send(JSON.stringify(msg));
-		}
-		streamer = null;
-	}
 	
 	ws.on('close', function(code, reason) {
-		console.error(`streamer disconnected: ${code} - ${reason}`);
-		onStreamerDisconnected();
+		console.error(`streamer ${streamer.id} disconnected: ${code} - ${reason}`);
+		onStreamerDisconnected(streamer);
 	});
 
 	ws.on('error', function(error) {
-		console.error(`streamer connection error: ${error}`);
-		onStreamerDisconnected();
+		console.error(`streamer ${streamer.id} connection error: ${error}`);
+		onStreamerDisconnected(streamer);
 		try {
 			ws.close(1006 /* abnormal closure */, error);
 		} catch(err) {
@@ -416,80 +689,163 @@ streamerServer.on('connection', function (ws, req) {
 		}
 	});
 
-	streamer = ws;
-
-	streamer.send(JSON.stringify(clientConfig));
-
-	if (sfuIsConnected()) {
-		const msg = { type: "playerConnected", playerId: SFUPlayerId, dataChannel: true, sfu: true };
-		streamer.send(JSON.stringify(msg));
-	}
+	ws.send(JSON.stringify(clientConfig));
+	requestStreamerId(streamer);
 });
 
-console.logColor(logging.Green, `WebSocket listening for SFU connections on :${sfuPort}`);
-let sfuServer = new WebSocket.Server({ port: sfuPort});
-sfuServer.on('connection', function (ws, req) {
-	// reject if we already have an sfu
-	if (sfuIsConnected()) {
-		ws.close(1013, 'Already have SFU');
+function forwardSFUMessageToPlayer(sfuPlayer, msg) {
+	const playerId = getPlayerIdFromMessage(msg);
+	const player = players.get(playerId);
+	if (player) {
+		logForward(sfuPlayer.getSFUStreamerComponent().id, playerId, msg);
+		player.sendTo(msg);
+	}
+}
+
+function forwardSFUMessageToStreamer(sfuPlayer, msg) {
+	logForward(sfuPlayer.getSFUStreamerComponent().id, sfuPlayer.streamerId, msg);
+	msg.sfuId = sfuPlayer.id;
+	sfuPlayer.sendFrom(msg);
+}
+
+function onPeerDataChannelsSFUMessage(sfuPlayer, msg) {
+	// sfu is telling a peer what stream id to use for a data channel
+	const playerId = getPlayerIdFromMessage(msg);
+	const player = players.get(playerId);
+	if (player) {
+		logForward(sfuPlayer.getSFUStreamerComponent().id, playerId, msg);
+		player.sendTo(msg);
+		player.datachannel = true;
+	}
+}
+
+// basically a duplicate of the streamer id request but this one does not register the streamer
+function requestSFUStreamerId(sfuPlayer) {
+	// request id
+	const msg = { type: "identify" };
+	const sfuStreamerComponent = sfuPlayer.getSFUStreamerComponent();
+	logOutgoing(sfuStreamerComponent.id, msg);
+	sfuStreamerComponent.ws.send(JSON.stringify(msg));
+
+	sfuStreamerComponent.idTimer = setTimeout(function() {
+		// streamer did not respond in time. give it a legacy id.
+		const newLegacyId = getUniqueSFUId();
+		if (newLegacyId.length == 0) {
+			const error = `Ran out of legacy ids.`;
+			console.error(error);
+			sfuPlayer.ws.close(1008, error);
+		} else {
+			sfuStreamerComponent.id = newLegacyId;
+		}
+	}, streamerIdTimeoutSecs * 1000);
+}
+
+function onSFUMessageId(sfuPlayer, msg) {
+	const sfuStreamerComponent = sfuPlayer.getSFUStreamerComponent();
+	logIncoming(sfuStreamerComponent.id, msg);
+	sfuStreamerComponent.id = msg.id;
+
+	if (!!sfuStreamerComponent.idTimer) {
+		clearTimeout(sfuStreamerComponent.idTimer);
+		delete sfuStreamerComponent.idTimer;
+	}
+}
+
+function onSFUMessageStartStreaming(sfuPlayer, msg) {
+	const sfuStreamerComponent = sfuPlayer.getSFUStreamerComponent();
+	logIncoming(sfuStreamerComponent.id, msg);
+	if (streamers.has(sfuStreamerComponent.id)) {
+		console.error(`SFU ${sfuStreamerComponent.id} is already registered as a streamer and streaming.`)
 		return;
 	}
 
-	players.set(SFUPlayerId, { ws: ws, id: SFUPlayerId });
+	registerStreamer(sfuStreamerComponent.id, sfuStreamerComponent);
+}
+
+function onSFUMessageStopStreaming(sfuPlayer, msg) {
+	const sfuStreamerComponent = sfuPlayer.getSFUStreamerComponent();
+	logIncoming(sfuStreamerComponent.id, msg);
+if (!streamers.has(sfuStreamerComponent.id)) {
+		console.error(`SFU ${sfuStreamerComponent.id} is not registered as a streamer or streaming.`)
+		return;
+	}
+
+	onStreamerDisconnected(sfuStreamerComponent);
+}
+
+function onSFUDisconnected(sfuPlayer) {
+	console.log("disconnecting SFU from streamer");
+	disconnectAllPlayers(sfuPlayer.id);
+	onStreamerDisconnected(sfuPlayer.getSFUStreamerComponent());
+	sfuPlayer.unsubscribe();
+	sfuPlayer.ws.close(4000, "SFU Disconnected");
+	players.delete(sfuPlayer.id);
+	streamers.delete(sfuPlayer.id);
+}
+
+sfuMessageHandlers.set('listStreamers', onPlayerMessageListStreamers);
+sfuMessageHandlers.set('subscribe', onPlayerMessageSubscribe);
+sfuMessageHandlers.set('unsubscribe', onPlayerMessageUnsubscribe);
+sfuMessageHandlers.set('offer', forwardSFUMessageToPlayer);
+sfuMessageHandlers.set('answer', forwardSFUMessageToStreamer);
+sfuMessageHandlers.set('streamerDataChannels', forwardSFUMessageToStreamer);
+sfuMessageHandlers.set('peerDataChannels', onPeerDataChannelsSFUMessage);
+sfuMessageHandlers.set('endpointId', onSFUMessageId);
+sfuMessageHandlers.set('startStreaming', onSFUMessageStartStreaming);
+sfuMessageHandlers.set('stopStreaming', onSFUMessageStopStreaming);
+
+console.logColor(logging.Green, `WebSocket listening for SFU connections on :${sfuPort}`);
+let sfuServer = new WebSocket.Server({ port: sfuPort });
+sfuServer.on('connection', function (ws, req) {
+
+	let playerId = sanitizePlayerId(nextPlayerId++);
+	console.logColor(logging.Green, `SFU (${req.connection.remoteAddress}) connected `);
+
+	let streamerComponent = new Streamer(req.connection.remoteAddress, ws, StreamerType.SFU);
+	let playerComponent = new Player(playerId, ws, PlayerType.SFU, WhoSendsOffer.Streamer);
+
+	streamerComponent.setSFUPlayerComponent(playerComponent);
+	playerComponent.setSFUStreamerComponent(streamerComponent);
+
+	players.set(playerId, playerComponent);
 
 	ws.on('message', (msgRaw) => {
 		var msg;
 		try {
 			msg = JSON.parse(msgRaw);
 		} catch (err) {
-			console.error(`cannot parse SFU message: ${msgRaw}\nError: ${err}`);
+			console.error(`Cannot parse SFU message: ${msgRaw}\nError: ${err}`);
 			ws.close(1008, 'Cannot parse');
 			return;
 		}
 
-		logIncoming("SFU", msg.type, msgRaw);
+		let sfuPlayer = players.get(playerId);
+		if (!sfuPlayer) {
+			console.error(`Received a message from an SFU not in the player list ${playerId}`);
+			ws.close(1001, 'Broken');
+			return;
+		}
 
-		if (msg.type == 'offer') {
-			// offers from the sfu are for players
-			const playerId = msg.playerId;
-			delete msg.playerId;
-			sendMessageToPlayer(playerId, msg);
+		let handler = sfuMessageHandlers.get(msg.type);
+		if (!handler || (typeof handler != 'function')) {
+			if (config.LogVerbose) {
+				console.logColor(logging.White, "\x1b[37m-> %s\x1b[34m: %s", sfuPlayer.id, msgRaw);
+			}
+			console.error(`unsupported SFU message type: ${msg.type}`);
+			ws.close(1008, 'Unsupported message type');
+			return;
 		}
-		else if (msg.type == 'answer') {
-			// answers from the sfu are for the streamer
-			msg.playerId = SFUPlayerId;
-			const rawMsg = JSON.stringify(msg);
-			logOutgoing("Streamer", msg.type, rawMsg);
-			streamer.send(rawMsg);
-		}
-		else if (msg.type == 'streamerDataChannels') {
-			// sfu is asking streamer to open a data channel for a connected peer
-			msg.sfuId = SFUPlayerId;
-			const rawMsg = JSON.stringify(msg);
-			logOutgoing("Streamer", msg.type, rawMsg);
-			streamer.send(rawMsg);
-		}
-		else if (msg.type == 'peerDataChannels') {
-			// sfu is telling a peer what stream id to use for a data channel
-			const playerId = msg.playerId;
-			delete msg.playerId;
-			sendMessageToPlayer(playerId, msg);
-			// remember the player has a data channel
-			const player = players.get(playerId);
-			player.datachannel = true;
-		}
+		handler(sfuPlayer, msg);
 	});
 
 	ws.on('close', function(code, reason) {
 		console.error(`SFU disconnected: ${code} - ${reason}`);
-		sfu = null;
-		disconnectSFUPlayer();
+		onSFUDisconnected(playerComponent);
 	});
 
 	ws.on('error', function(error) {
 		console.error(`SFU connection error: ${error}`);
-		sfu = null;
-		disconnectSFUPlayer();
+		onSFUDisconnected(playerComponent);
 		try {
 			ws.close(1006 /* abnormal closure */, error);
 		} catch(err) {
@@ -497,38 +853,80 @@ sfuServer.on('connection', function (ws, req) {
 		}
 	});
 
-	sfu = ws;
-	console.logColor(logging.Green, `SFU (${req.connection.remoteAddress}) connected `);
-
-	if (streamer && streamer.readyState == 1) {
-		const msg = { type: "playerConnected", playerId: SFUPlayerId, dataChannel: true, sfu: true };
-		streamer.send(JSON.stringify(msg));
-	}
+	requestStreamerId(playerComponent.getSFUStreamerComponent());
 });
 
 let playerCount = 0;
 
+function sendPlayersCount() {
+	const msg = { type: 'playerCount', count: players.size };
+	logOutgoing("[players]", msg);
+	for (let player of players.values()) {
+		player.sendTo(msg);
+	}
+}
+
+function onPlayerMessageSubscribe(player, msg) {
+	logIncoming(player.id, msg);
+	player.subscribe(msg.streamerId);
+}
+
+function onPlayerMessageUnsubscribe(player, msg) {
+	logIncoming(player.id, msg);
+	player.unsubscribe();
+}
+
+function onPlayerMessageStats(player, msg) {
+	console.log(`player ${playerId}: stats\n${msg.data}`);
+}
+
+function onPlayerMessageListStreamers(player, msg) {
+	logIncoming(player.id, msg);
+
+	let reply = { type: 'streamerList', ids: [] };
+	for (let [streamerId, streamer] of streamers) {
+		reply.ids.push(streamerId);
+	}
+
+	logOutgoing(player.id, reply);
+	player.sendTo(reply);
+}
+
+function forwardPlayerMessage(player, msg) {
+	logForward(player.id, player.streamerId, msg);
+	player.sendFrom(msg);
+}
+
+function onPlayerDisconnected(playerId) {
+	const player = players.get(playerId);
+	player.unsubscribe();
+	players.delete(playerId);
+	--playerCount;
+	sendPlayersCount();
+	sendPlayerDisconnectedToFrontend();
+	sendPlayerDisconnectedToMatchmaker();
+}
+
+playerMessageHandlers.set('subscribe', onPlayerMessageSubscribe);
+playerMessageHandlers.set('unsubscribe', onPlayerMessageUnsubscribe);
+playerMessageHandlers.set('stats', onPlayerMessageStats);
+playerMessageHandlers.set('offer', forwardPlayerMessage);
+playerMessageHandlers.set('answer', forwardPlayerMessage);
+playerMessageHandlers.set('iceCandidate', forwardPlayerMessage);
+playerMessageHandlers.set('listStreamers', onPlayerMessageListStreamers);
+// sfu related messages
+playerMessageHandlers.set('dataChannelRequest', forwardPlayerMessage);
+playerMessageHandlers.set('peerDataChannelsReady', forwardPlayerMessage);
+
 console.logColor(logging.Green, `WebSocket listening for Players connections on :${httpPort}`);
 let playerServer = new WebSocket.Server({ server: config.UseHTTPS ? https : http});
 playerServer.on('connection', function (ws, req) {
-	// Reject connection if streamer is not connected
-	if (!streamer || streamer.readyState != 1 /* OPEN */) {
-		ws.close(1013 /* Try again later */, 'Streamer is not connected');
-		return;
-	}
-
 	var url = require('url');
 	const parsedUrl = url.parse(req.url);
 	const urlParams = new URLSearchParams(parsedUrl.search);
-	const preferSFU = urlParams.has('preferSFU') && urlParams.get('preferSFU') !== 'false';
-	const skipSFU = !preferSFU;
-	const skipStreamer = preferSFU && sfu;
+	const whoSendsOffer = urlParams.has('OfferToReceive') && urlParams.get('OfferToReceive') !== 'false' ? WhoSendsOffer.Browser : WhoSendsOffer.Streamer;
 
-	if(preferSFU && !sfu) {
-		ws.send(JSON.stringify({ type: "warning", warning: "Even though ?preferSFU was specified, there is currently no SFU connected." }));
-	}
-
-	if(playerCount + 1 > maxPlayerCount && maxPlayerCount !== -1)
+	if (playerCount + 1 > maxPlayerCount && maxPlayerCount !== -1)
 	{
 		console.logColor(logging.Red, `new connection would exceed number of allowed concurrent connections. Max: ${maxPlayerCount}, Current ${playerCount}`);
 		ws.close(1013, `too many connections. max: ${maxPlayerCount}, current: ${playerCount}`);
@@ -536,87 +934,49 @@ playerServer.on('connection', function (ws, req) {
 	}
 
 	++playerCount;
-	let playerId = (++nextPlayerId).toString();
+	let playerId = sanitizePlayerId(nextPlayerId++);
 	console.logColor(logging.Green, `player ${playerId} (${req.connection.remoteAddress}) connected`);
-	players.set(playerId, { ws: ws, id: playerId });
+	let player = new Player(playerId, ws, PlayerType.Regular, whoSendsOffer);
+	players.set(playerId, player);
 
-	function sendPlayersCount() {
-		let playerCountMsg = JSON.stringify({ type: 'playerCount', count: players.size });
-		for (let p of players.values()) {
-			p.ws.send(playerCountMsg);
-		}
-	}
-	
 	ws.on('message', (msgRaw) =>{
-
 		var msg;
 		try {
 			msg = JSON.parse(msgRaw);
 		} catch (err) {
-			console.error(`cannot parse player ${playerId} message: ${msgRaw}\nError: ${err}`);
+			console.error(`Cannot parse player ${playerId} message: ${msgRaw}\nError: ${err}`);
 			ws.close(1008, 'Cannot parse');
 			return;
 		}
 
-		if(!msg || !msg.type)
-		{
-			console.error(`Cannot parse message ${msgRaw}`);
+		let player = players.get(playerId);
+		if (!player) {
+			console.error(`Received a message from a player not in the player list ${playerId}`);
+			ws.close(1001, 'Broken');
 			return;
 		}
-		
-		logIncoming(`player ${playerId}`, msg.type, msgRaw);
 
-		if (msg.type == 'offer') {
-			msg.playerId = playerId;
-			sendMessageToController(msg, skipSFU);
-		} else if (msg.type == 'answer') {
-			msg.playerId = playerId;
-			sendMessageToController(msg, skipSFU, skipStreamer);
-		} else if (msg.type == 'iceCandidate') {
-			msg.playerId = playerId;
-			sendMessageToController(msg, skipSFU, skipStreamer);
-		} else if (msg.type == 'stats') {
-			console.log(`player ${playerId}: stats\n${msg.data}`);
-		} else if (msg.type == "dataChannelRequest") {
-			msg.playerId = playerId;
-			sendMessageToController(msg, skipSFU, true);
-		} else if (msg.type == "peerDataChannelsReady") {
-			msg.playerId = playerId;
-			sendMessageToController(msg, skipSFU, true);
-		}
-		else {
-			console.error(`player ${playerId}: unsupported message type: ${msg.type}`);
-			return;
-		}
-	});
-
-	function onPlayerDisconnected() {
-		try {
-			--playerCount;
-			const player = players.get(playerId);
-			if (player.datachannel) {
-				// have to notify the streamer that the datachannel can be closed
-				sendMessageToController({ type: 'playerDisconnected', playerId: playerId }, true, false);
+		let handler = playerMessageHandlers.get(msg.type);
+		if (!handler || (typeof handler != 'function')) {
+			if (config.LogVerbose) {
+				console.logColor(logging.White, "\x1b[37m-> %s\x1b[34m: %s", playerId, msgRaw);
 			}
-			players.delete(playerId);
-			sendMessageToController({ type: 'playerDisconnected', playerId: playerId }, skipSFU);
-			sendPlayerDisconnectedToFrontend();
-			sendPlayerDisconnectedToMatchmaker();
-			sendPlayersCount();
-		} catch(err) {
-			console.logColor(logging.Red, `ERROR:: onPlayerDisconnected error: ${err.message}`);
+			console.error(`unsupported player message type: ${msg.type}`);
+			ws.close(1008, 'Unsupported message type');
+			return;
 		}
-	}
+		handler(player, msg);
+	});
 
 	ws.on('close', function(code, reason) {
 		console.logColor(logging.Yellow, `player ${playerId} connection closed: ${code} - ${reason}`);
-		onPlayerDisconnected();
+		onPlayerDisconnected(playerId);
 	});
 
 	ws.on('error', function(error) {
 		console.error(`player ${playerId} connection error: ${error}`);
 		ws.close(1006 /* abnormal closure */, error);
-		onPlayerDisconnected();
+		onPlayerDisconnected(playerId);
 
 		console.logColor(logging.Red, `Trying to reconnect...`);
 		reconnect();
@@ -624,30 +984,24 @@ playerServer.on('connection', function (ws, req) {
 
 	sendPlayerConnectedToFrontend();
 	sendPlayerConnectedToMatchmaker();
-
-	ws.send(JSON.stringify(clientConfig));
-
-	sendMessageToController({ type: "playerConnected", playerId: playerId, dataChannel: true, sfu: false }, skipSFU, skipStreamer);
+	player.ws.send(JSON.stringify(clientConfig));
 	sendPlayersCount();
 });
 
-function disconnectAllPlayers(code, reason) {
-	console.log("killing all players");
+function disconnectAllPlayers(streamerId) {
+	console.log(`unsubscribing all players on ${streamerId}`);
 	let clone = new Map(players);
 	for (let player of clone.values()) {
-		if (player.id != SFUPlayerId) { // dont dc the sfu
-			player.ws.close(code, reason);
+		 if (player.streamerId == streamerId) {
+		 	// disconnect players but just unsubscribe the SFU
+		 	const sfuPlayer = getSFUForStreamer(streamerId);
+		 	if (sfuPlayer && player.id == sfuPlayer.id) {
+				sfuPlayer.unsubscribe();
+			} else {
+				player.ws.close();
+			}
 		}
 	}
-}
-
-function disconnectSFUPlayer() {
-	console.log("disconnecting SFU from streamer");
-	if(players.has(SFUPlayerId)) {
-		players.get(SFUPlayerId).ws.close(4000, "SFU Disconnected");
-		players.delete(SFUPlayerId);
-	}
-	sendMessageToController({ type: 'playerDisconnected', playerId: SFUPlayerId }, true, false);
 }
 
 /**
@@ -674,8 +1028,8 @@ if (config.UseMatchmaker) {
 		message = {
 			type: 'connect',
 			address: typeof serverPublicIp === 'undefined' ? '127.0.0.1' : serverPublicIp,
-			port: httpPort,
-			ready: streamer && streamer.readyState === 1,
+			port: config.UseHTTPS ? httpsPort : httpPort,
+			ready: streamers.size > 0,
 			playerConnected: playerConnected
 		};
 
@@ -889,10 +1243,7 @@ function sendStreamerConnectedToMatchmaker() {
 
 function sendStreamerDisconnectedToMatchmaker() {
 	if (!config.UseMatchmaker)
-	{
 		return;
-	}
-
 	try {
 		message = {
 			type: 'streamerDisconnected'
