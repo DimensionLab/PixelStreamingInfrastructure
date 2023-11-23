@@ -29,6 +29,15 @@ export class WebSocketController {
         SignallingProtocol.setupDefaultHandlers(this);
     }
 
+    startHealthCheck(ws: WebSocket) {
+        setInterval(function() {
+          console.log("Pinging server to check connection");
+          ws.send(JSON.stringify({
+            type: 'ping',
+        }));
+        }, 10000);
+      }
+
     /**
      * Connect to the signaling server
      * @param connectionURL - The Address of the signaling server
@@ -44,6 +53,7 @@ export class WebSocketController {
             this.webSocket.onmessage = (event) => this.handleOnMessage(event);
             this.webSocket.onmessagebinary = (event) =>
                 this.handleOnMessageBinary(event);
+            this.startHealthCheck(this.webSocket);
             return true;
         } catch (error) {
             Logger.Error(error, error);
