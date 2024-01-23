@@ -1,7 +1,7 @@
 {
 	"UseFrontend": false,
 	"UseMatchmaker": false,
-	"UseHTTPS": false,
+	"UseHTTPS": true,
 	"UseAuthentication": false,
 	"LogToFile": true,
 	"LogVerbose": true,
@@ -9,7 +9,7 @@
 	"AdditionalRoutes": {},
 	"EnableWebserver": true,
 	"MatchmakerAddress": "",
-	"MatchmakerPort": "9999",
+	"MatchmakerPort": 9999,
 	"PublicIp": "localhost",
 	"HttpPort": 80,
 	"HttpsPort": 443,
