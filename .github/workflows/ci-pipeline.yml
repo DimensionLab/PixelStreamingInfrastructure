@@ -21,14 +21,14 @@ jobs:
         run: |
           ls -l
           pwd
-          docker build -t simlai-pixel-streaming:dev ./SignallingWebServer/Dockerfile
+          docker build -t simlai-pixel-streaming:dev ./SignallingWebServer
           docker tag simlai-pixel-streaming:dev ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/simlai-pixel-streaming:dev
         # RELEASE BUILD
         #  docker tag simlai-pixel-streaming:dev ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/simlai-pixel-streaming:latest
         env:
           AWS_REGION: ${{ secrets.AWS_REGION }}
           AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
-        working-directory: .
+        # working-directory: .
 
       - name: Set up AWS CLI
         uses: aws-actions/configure-aws-credentials@v1
