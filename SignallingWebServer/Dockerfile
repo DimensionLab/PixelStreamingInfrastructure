@@ -9,6 +9,9 @@ RUN SignallingWebServer/platform_scripts/bash/setup.sh --build
 EXPOSE 80
 EXPOSE 443
 
+EXPOSE 6060
+EXPOSE 6061
+
 # Expose TCP port 8888 for streamer WebSocket connections
 EXPOSE 8888
 EXPOSE 8888/udp
