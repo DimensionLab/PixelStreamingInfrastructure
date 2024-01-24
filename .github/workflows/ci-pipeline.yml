@@ -21,7 +21,7 @@ jobs:
         run: |
           ls -l
           pwd
-          docker build -t simlai-pixel-streaming:dev .
+          docker build -t simlai-pixel-streaming:dev ./SignallingWebServer/
           docker tag simlai-pixel-streaming:dev ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/simlai-pixel-streaming:dev
         # RELEASE BUILD      
         #  docker tag simlai-pixel-streaming:dev ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/simlai-pixel-streaming:latest 
