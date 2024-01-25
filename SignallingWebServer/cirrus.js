@@ -40,7 +40,7 @@ logging.RegisterConsoleLogger();
 const defaultConfig = {
   UseFrontend: false,
   UseMatchmaker: false,
-  UseHTTPS: true,
+  UseHTTPS: false,
   HTTPSCertFile: "/nginx/ssl/server.crt",
   HTTPSKeyFile: "/nginx/ssl/server.key",
   UseAuthentication: false,
