@@ -14,28 +14,51 @@ logging.RegisterConsoleLogger();
 
 // Command line argument --configFile needs to be checked before loading the config, all other command line arguments are dealt with through the config object
 
+// const defaultConfig = {
+//   UseFrontend: false,
+//   UseMatchmaker: false,
+//   UseHTTPS: false,
+//   HTTPSCertFile: "./certificates/client-cert.pem",
+//   HTTPSKeyFile: "./certificates/client-key.pem",
+//   UseAuthentication: false,
+//   LogToFile: true,
+//   LogVerbose: true,
+//   HomepageFile: "player.html",
+//   AdditionalRoutes: new Map(),
+//   EnableWebserver: true,
+//   MatchmakerAddress: "",
+//   MatchmakerPort: 9999,
+//   PublicIp: "localhost",
+//   HttpPort: 80,
+//   HttpsPort: 443,
+//   StreamerPort: 8888,
+//   SFUPort: 8889,
+//   MaxPlayerCount: -1,
+//   DisableSSLCert: true,
+// };
+
 const defaultConfig = {
-  UseFrontend: false,
-  UseMatchmaker: false,
-  UseHTTPS: false,
-  HTTPSCertFile: "./certificates/client-cert.pem",
-  HTTPSKeyFile: "./certificates/client-key.pem",
-  UseAuthentication: false,
-  LogToFile: true,
-  LogVerbose: true,
-  HomepageFile: "player.html",
-  AdditionalRoutes: new Map(),
-  EnableWebserver: true,
-  MatchmakerAddress: "",
-  MatchmakerPort: 9999,
-  PublicIp: "localhost",
-  HttpPort: 80,
-  HttpsPort: 443,
-  StreamerPort: 8888,
-  SFUPort: 8889,
-  MaxPlayerCount: -1,
-  DisableSSLCert: true,
-};
+  "UseFrontend": false,
+  "UseMatchmaker": false,
+  "UseHTTPS": true,
+  "HTTPSCertFile": "/etc/nginx/ssl/server.crt",
+  "HTTPSKeyFile": "/etc/nginx/ssl/server.key",
+  "UseAuthentication": false,
+  "LogToFile": true,
+  "LogVerbose": true,
+  "HomepageFile": "player.html",
+  "AdditionalRoutes": {},
+  "EnableWebserver": true,
+  "MatchmakerAddress": "",
+  "MatchmakerPort": "9999",
+  "PublicIp": "server-pixel-streaming",
+  "HttpPort": 6060,
+  "HttpsPort": 6061,
+  "StreamerPort": 8888,
+  "SFUPort": 8889,
+  "MaxPlayerCount": -1,
+  "peerConnectionOptions": "{ \"iceServers\": [{\"urls\": [\"stun:stun.l.google.com:19302\",\"turn:35.158.232.32:3478?transport=tcp\"], \"username\": \"PixelStreamingUser\", \"credential\": \"AnotherTURNintheroad\"}] }"
+}
 
 const argv = require("yargs").argv;
 var configFile =
