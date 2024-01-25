@@ -38,27 +38,28 @@ logging.RegisterConsoleLogger();
 // };
 
 const defaultConfig = {
-  "UseFrontend": false,
-  "UseMatchmaker": false,
-  "UseHTTPS": true,
-  "HTTPSCertFile": "/nginx/ssl/server.crt",
-  "HTTPSKeyFile": "/nginx/ssl/server.key",
-  "UseAuthentication": false,
-  "LogToFile": true,
-  "LogVerbose": true,
-  "HomepageFile": "player.html",
-  "AdditionalRoutes": {},
-  "EnableWebserver": true,
-  "MatchmakerAddress": "",
-  "MatchmakerPort": "9999",
-  "PublicIp": "server-pixel-streaming",
-  "HttpPort": 6060,
-  "HttpsPort": 6061,
-  "StreamerPort": 8888,
-  "SFUPort": 8889,
-  "MaxPlayerCount": -1,
-  "peerConnectionOptions": "{ \"iceServers\": [{\"urls\": [\"stun:stun.l.google.com:19302\",\"turn:35.158.232.32:3478?transport=tcp\"], \"username\": \"PixelStreamingUser\", \"credential\": \"AnotherTURNintheroad\"}] }"
-}
+  UseFrontend: false,
+  UseMatchmaker: false,
+  UseHTTPS: true,
+  HTTPSCertFile: "/nginx/ssl/server.crt",
+  HTTPSKeyFile: "/nginx/ssl/server.key",
+  UseAuthentication: false,
+  LogToFile: true,
+  LogVerbose: true,
+  HomepageFile: "player.html",
+  AdditionalRoutes: {},
+  EnableWebserver: true,
+  MatchmakerAddress: "",
+  MatchmakerPort: "9999",
+  PublicIp: "server-pixel-streaming",
+  HttpPort: 6060,
+  HttpsPort: 6061,
+  StreamerPort: 8888,
+  SFUPort: 8889,
+  MaxPlayerCount: -1,
+  peerConnectionOptions:
+    '{ "iceServers": [{"urls": ["stun:stun.l.google.com:19302","turn:35.158.232.32:3478?transport=tcp"], "username": "PixelStreamingUser", "credential": "AnotherTURNintheroad"}] }',
+};
 
 const argv = require("yargs").argv;
 var configFile =
@@ -788,7 +789,20 @@ console.logColor(
   logging.Green,
   `WebSocket listening for Streamer connections on :${streamerPort}`
 );
+
+function startHealthCheck(ws) {
+  setInterval(function () {
+    console.log("Pinging server to check connection");
+    ws.send(
+      JSON.stringify({
+        type: "ping",
+      })
+    );
+  }, 10000);
+}
+
 let streamerServer = new WebSocket.Server({ port: streamerPort, backlog: 1 });
+
 streamerServer.on("connection", function (ws, req) {
   console.logColor(
     logging.Green,
@@ -798,6 +812,8 @@ streamerServer.on("connection", function (ws, req) {
 
   const temporaryId = req.connection.remoteAddress;
   let streamer = new Streamer(temporaryId, ws, StreamerType.Regular);
+
+  startHealthCheck(ws);
 
   ws.on("message", (msgRaw) => {
     var msg;
@@ -829,6 +845,7 @@ streamerServer.on("connection", function (ws, req) {
   ws.on("close", function (code, reason) {
     console.error(`streamer ${streamer.id} disconnected: ${code} - ${reason}`);
     onStreamerDisconnected(streamer);
+    clearInterval(startHealthCheck);
   });
 
   ws.on("error", function (error) {
@@ -839,6 +856,7 @@ streamerServer.on("connection", function (ws, req) {
     } catch (err) {
       console.error(`ERROR: ws.on error: ${err.message}`);
     }
+    clearInterval(startHealthCheck);
   });
 
   ws.send(JSON.stringify(clientConfig));
