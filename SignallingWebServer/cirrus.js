@@ -791,6 +791,7 @@ console.logColor(
 );
 
 function startHealthCheck(ws) {
+  console.log("starting health check");
   setInterval(function () {
     console.log("Pinging server to check connection");
     ws.send(
@@ -856,7 +857,6 @@ streamerServer.on("connection", function (ws, req) {
     } catch (err) {
       console.error(`ERROR: ws.on error: ${err.message}`);
     }
-    clearInterval(startHealthCheck);
   });
 
   ws.send(JSON.stringify(clientConfig));
