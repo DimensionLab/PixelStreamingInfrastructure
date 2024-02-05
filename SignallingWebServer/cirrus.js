@@ -790,18 +790,6 @@ console.logColor(
   `WebSocket listening for Streamer connections on :${streamerPort}`
 );
 
-function startHealthCheck(ws) {
-  console.log("starting health check");
-  setInterval(function () {
-    console.log("Pinging server to check connection");
-    ws.send(
-      JSON.stringify({
-        type: "ping",
-      })
-    );
-  }, 10000);
-}
-
 let streamerServer = new WebSocket.Server({ port: streamerPort, backlog: 1 });
 
 streamerServer.on("connection", function (ws, req) {
@@ -813,8 +801,6 @@ streamerServer.on("connection", function (ws, req) {
 
   const temporaryId = req.connection.remoteAddress;
   let streamer = new Streamer(temporaryId, ws, StreamerType.Regular);
-
-  startHealthCheck(ws);
 
   ws.on("message", (msgRaw) => {
     var msg;
@@ -846,7 +832,6 @@ streamerServer.on("connection", function (ws, req) {
   ws.on("close", function (code, reason) {
     console.error(`streamer ${streamer.id} disconnected: ${code} - ${reason}`);
     onStreamerDisconnected(streamer);
-    clearInterval(startHealthCheck);
   });
 
   ws.on("error", function (error) {
