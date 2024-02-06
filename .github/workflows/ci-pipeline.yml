@@ -22,7 +22,7 @@ jobs:
           ls -l
           pwd
           docker build -t simlai-pixel-streaming:dev .
-          docker tag simlai-pixel-streaming:dev ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/simlai-pixel-streaming:dev
+        # docker tag simlai-pixel-streaming:dev ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/simlai-pixel-streaming:dev
         # RELEASE BUILD
           docker tag simlai-pixel-streaming:dev ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/simlai-pixel-streaming:latest
         env:
@@ -46,7 +46,7 @@ jobs:
 
       - name: Push Docker image to ECR
         run: |
-          docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/simlai-pixel-streaming:dev
+        #  docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/simlai-pixel-streaming:dev
           docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/simlai-pixel-streaming:latest
         env:
           AWS_REGION: ${{ secrets.AWS_REGION }}
